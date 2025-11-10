@@ -13,6 +13,7 @@
 \emph{Процессом исполнения} называется последовательный запуск инструкций, который в любой момент может быть прерван планировщиком системы и возобновлён через некоторое время. За данный промежуток состояние системы может кардинально измениться в пределах используемых функций. Единственным способом сделать какое-либо действие \emph{атомарно} - использовать специальные инструкции процессора, которые в большинстве языков программирования сведены в отдельный тип и называются \emph{atomic}.
 
 Так или иначе ядро ОС предоставляет системные вызовы, которые предоставляют \emph{блокирующий} механизм синхронизации - \emph{mutex}. Он универсален и достаточно быстр и оптимален, если речь идёт об использовании других системных вызовов в этом же блоке кода. Но если заглянуть глубже в те механизмы, которые мы используем для обработки запросов, то оказывается, что его скорости мягко говоря недостаточно. В зависимости от того, какие механизмы синхронизации мы используем, появляется 4 основных вида гарантий работы приложения:
+
 \begin{itemize}
 	\item Блокирующие
 	\begin{itemize}
@@ -68,6 +69,7 @@ int fetch_add() {
 	
 	\end{itemize}
 \end{itemize}
+
 В дальнейшем мы будем прибегать в общим приемам, которые эти гарантии предоставляют.
 
 \section{Особенности работы с памятью}
@@ -118,6 +120,7 @@ public:
 	}
 	bool decrement() {
 		std::lock_guard<std::mutex> lock(lock_mutex);
+		if (counter == 0) return false;
 		if ((--counter) == 0) {
 			return true;
 		}
@@ -130,7 +133,7 @@ public:
 };
 \end{lstlisting}
 
-Давайте его немного ускорим и превратим в lock-free
+Давайте его немного ускорим и превратим в \textsc{lock-free}
 
 \begin{lstlisting}[language=c++]
 using ull = unsigned long long;
@@ -140,7 +143,7 @@ public:
 	bool increment() {
 		ull cur_counter = counter.load();
 		while (cur_counter != 0 &&
-	!counter.compare_exchange_weak(cur_counter, cur_counter + 1)) {
+		!counter.compare_exchange_weak(cur_counter, cur_counter + 1)) {
 			cur_counter = counter.load();
 		}
 		return cur_counter != 0;
@@ -163,10 +166,7 @@ class ReferenceCounter {
 	const ull zero_flag = (1ll << 63);
 public:
 	bool increment() {
-		if (counter.fetch_add(1) & zero_flag) {
-			return false;
-		}
-		return true;
+		return ((counter.fetch_add(1) & zero_flag) == 0);
 	}
 	bool decrement() {
 		if (counter.fetch_sub(1) == 1) {
@@ -206,6 +206,7 @@ public:
 	}
 };
 \end{lstlisting}
+
 Будем при копировании лишь ссылаться на тот же \emph{c\_str}, не переписывая заново его содержимое. Если при изменении мы являемся исключительным владельцем данной строки, то тогда мы действительно поменяем данные. Иначе мы скопируем строку, как мы и хотели до этого
 
 \begin{lstlisting}[language=c++]
@@ -242,15 +243,67 @@ public:
 };
 \end{lstlisting}
 
+\subsection{Help подход и взаимопомощь}
+
+Чтобы добавить метод \emph{get\_counter} в \emph{ReferenceCounter} давайте разберёмся с механизмом помощи. Пусть тот поток, который получил значение счётчика 1 при вызове \emph{get\_counter} поможет установить его в \emph{zero\_flag} и даст понять это потоку с вызванным \emph{decrement}. В исходном материале, откуда было это всё взято есть дополнительная проверка на то, что только один поток из \emph{decrement} смог бы поменять счётчик из состояния когда уже помогли и он ровно \emph{zero\_flag}. Эта проверка - \emph{counter.exchange(zero\_flag)} \& \emph{help\_flag}. Она не необходима, но её труднее убрать чем добавить
+
+\begin{lstlisting}[language=c++]
+using ull = unsigned long long;
+class ReferenceCounter {
+	std::atomic<ull> counter = 1;
+	const ull zero_flag = (1ll << 63);
+	const ull help_flag = (1ll << 62);
+public:
+	bool increment() {
+		return ((counter.fetch_add(1) & zero_flag) == 0);
+	}
+	bool decrement() {
+		if (counter.fetch_sub(1) == 1) {
+			ull expected = 0;
+			if (counter.compare_exchange_strong(expected, zero_flag)) {
+				return true;
+			} else if ((expected & help_flag) &&
+			(counter.exchange(zero_flag) & help_flag)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	ull get_counter() {
+		ull cur_counter = counter.load();
+		if (cur_counter == 0 &&
+		counter.compare_exchange_strong(cur_counter, zero_flag | help_flag)) {
+			return 0;
+		}
+		if (cur_counter & zero_flag) {
+			return 0;
+		}
+		return cur_counter;
+	}
+};
+\end{lstlisting}
+
+Заметьте как получается использовать время другого потока, потраченное на помощь, чтобы развернуть бесконечный цикл в конечное исполнение на всей системе. Мы будем использовать это дальше в \textsc{lock-free} очереди Майкла и Скотта, которая использует эту технику для поддержания одного свойства системы
 
 \section{Линеаризуемость}
+
+Вернёмся к проблеме, возникшей при написании \textsc{wait-free} счётчика. Нам можно было бы просто вернуть 1. И получить следующую ошибку в одном из случаев исполнения
+
 \begin{tikzpicture}[scale=0.8]
-\draw[->] (0,0) -- (10,0);
-\draw (1.5,0.5) rectangle (2.5,1.0) node[midway] {enqueue};
-\draw (3.5,1) rectangle (1.5,1.5) node[midway] {dequeue};
-\draw (6,0.5) rectangle (8,1.0) node[midway] {enqueue};
+	\draw[->] (0,0) -- (10,0);
+	\draw[blue!80] (0.0, 0.5) rectangle (8.0, 1.0) node[midway] {decrease};
+	\draw[blue!100, ultra thick, -] (1.0, -0.5) -- (1.0, 1.0) node[pos = -0.5, above] {fetch\_sub(1) == 1};
+	\draw[blue!100, ultra thick, -] (7.8, -0.5) -- (7.8, 1.0) node[pos = -0.5, above] {CAS!};
+	\draw[red!80] (3.0, 0.0) rectangle (9.5, 0.5) node[midway] {get\_counter};
+	\draw[red!100, ultra thick, -] (4.5, -0.5) -- (4.5, 0.5) node[pos = -0.5, above] {load() == 0};
+	\draw[red!100, ultra thick, -] (9.2, -0.5) -- (9.2, 0.5) node[pos = -0.5, above] {return 1};
 \end{tikzpicture}
+
+Но в том то и соль, что исполнение у нас было бы верным, если бы было другое требование к порядку применения операций. Если бы наша согласованность операций была бы \emph{последовательная}, чему есть термин \emph{Sequential consistency}, то судя по ней "результат любого выполнения такой же, как в случае если бы \textbf{операции всех процессоров были выполнены в некотором последовательном порядке}, и операции каждого отдельного процессора появлялись в этой последовательности в порядке определённом его программой" (то есть в том самом порядке, какой дан из определения процесса). Нам такой критерий не подходит, он рушится на \emph{if (get\_count() > 0) decrement();} будет выдавать неверный результат на данном примере
+
+Объект называется \emph{линеаризуемым}, если любая операция над ним выполняется \emph{атомарно} в какой-то момент времени. И более того, любое чтение возвращает результат всех выполненных на момент его прихода записей. То есть нашу операцию можно воспринимать как \emph{атомарную}, а всю систему - как набор последовательных инструкций
+
 \section{Lock-free очередь майкла-скотта}
-\section{Несимметричный RCU}
+\section{RCU как несимметричный механизм SMR}
 
 \end{document}

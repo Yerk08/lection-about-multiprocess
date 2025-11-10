@@ -23,16 +23,48 @@ public:
         }
 };
 
+class WaitfreeReferenceCounter {
+        std::atomic<ull> counter = 1;
+        const ull zero_flag = (1ll << 63);
+        const ull help_flag = (1ll << 62);
+public:
+        bool increment() {
+                return ((counter.fetch_add(1) & zero_flag) == 0);
+        }
+        bool decrement() {
+                if (counter.fetch_sub(1) == 1) {
+                        ull expected = 0;
+                        if (counter.compare_exchange_strong(expected, zero_flag)) {
+                                return true;
+                        } else if ((expected & help_flag) &&
+                        (counter.exchange(zero_flag) & help_flag)) {
+                                return true;
+                        }
+                }
+                return false;
+        }
+        ull get_counter() {
+                ull cur_counter = counter.load();
+                if (cur_counter == 0 && counter.compare_exchange_strong(cur_counter, zero_flag | help_flag)) {
+                        return 0;
+                }
+                if (cur_counter & zero_flag) {
+                        return 0;
+                }
+                return cur_counter;
+        }
+};
+
 class basic_string {
         size_t size;
         char  *c_str;
-        ReferenceCounter *counter;
+        WaitfreeReferenceCounter *counter;
 public:
 		basic_string(const char *other) {
 			size = sizeof(other);
 			c_str = new char[size];
 			memcpy(c_str, other, size);
-			counter = new ReferenceCounter();
+			counter = new WaitfreeReferenceCounter();
 		}
 		size_t get_size() {
 			return size - 1;
@@ -55,7 +87,7 @@ public:
 							delete c_str;
                         }
                         c_str = new_c_str;
-                        counter = new ReferenceCounter();
+                        counter = new WaitfreeReferenceCounter();
                 }
                 return c_str[index];
         }
@@ -70,7 +102,7 @@ public:
 int main() {
 	basic_string a = "asd";
 	basic_string b = a;
-	//a[1] = 'q';
+	a[1] = 'q';
 	std::cout << b.data() << std::endl;
 	std::cout << a.data() << std::endl;
 }
