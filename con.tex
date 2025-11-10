@@ -68,21 +68,179 @@ int fetch_add() {
 	
 	\end{itemize}
 \end{itemize}
-
+В дальнейшем мы будем прибегать в общим приемам, которые эти гарантии предоставляют.
 
 \section{Особенности работы с памятью}
+
+У каждого потока есть своя локальная память, которую он может менять без опасений изменения другими потоками. Также у него есть доступ к общей памяти. Чтобы понять какие проблемы могут возникнуть при её изменении давайте представим следующие программы:
+
+\begin{minipage}{0.5\textwidth}
+\begin{lstlisting}[language=C++]
+Object *ref;
+void first() {
+	ref = new Object(A);
+	// the thread has stopped
+	if (ref != nullptr) {
+		// do smth with A
+	}
+}
+\end{lstlisting}
+\end{minipage}
+\hfill
+\begin{minipage}{0.5\textwidth}
+\begin{lstlisting}[language=C++]
+void second() {
+	if (ref != nullptr) delete ref;
+	ref = new Object(B);
+}
+\end{lstlisting}
+\end{minipage}
+
+Решением подобного рода проблем, связанных с удалением данных, является применение SMR(safe memory reclamation) алгоритмов (либо сборщика мусора для некоторых языков). Суть их очень проста - они сначала дожидаются завершения всех потоков, имеющих ссылку на удаляемый объект, и лишь затем осуществляют освобождение. Мы рассмотрим два из них, для начала поговорим о счётчике ссылок
+
 \section{Счётчик ссылок}
 
-\begin{lstlisting}[language=C++]
-#include <iostream>
+Первое решение, приходящее в голову - аккуратно подсчитывать количество ссылающихся на объект потоков, чтобы при достижении нуля начать освобождение. Давайте реализуем \textsc{mutex-based} подход
 
-int main() {
-    std::cout << "Hello, World!" << std::endl;
-    return 0;
+\begin{lstlisting}[language=C++]
+using ull = unsigned long long;
+class ReferenceCounter {
+	ull counter = 1;
+	std::mutex lock_mutex;
+public:
+	bool increment() {
+		std::lock_guard<std::mutex> lock(lock_mutex);
+		if (counter != 0) {
+			++counter;
+			return true;
+		}
+		return false;
+	}
+	bool decrement() {
+		std::lock_guard<std::mutex> lock(lock_mutex);
+		if ((--counter) == 0) {
+			return true;
+		}
+		return false;
+	}
+	ull get_counter() {
+		std::lock_guard<std::mutex> lock(lock_mutex);
+		return counter;
+	}
 }
 \end{lstlisting}
 
+Давайте его немного ускорим и превратим в lock-free
+
+\begin{lstlisting}[language=c++]
+using ull = unsigned long long;
+class referencecounter {
+	std::atomic<ull> counter = 1;
+public:
+	bool increment() {
+		ull cur_counter = counter.load();
+		while (cur_counter != 0 &&
+	counter.compare_exchange_weak(cur_counter, cur_counter + 1)) {
+			cur_counter = counter.load();
+		}
+		return cur_counter != 0;
+	}
+	bool decrement() {
+		return counter.fetch_sub(1) == 1;
+	}
+	ull get_counter() {
+		return counter.load();
+	}
+}
+\end{lstlisting}
+
+Заметим, что наше состояние всегда определено и на написание каждой операции мы не меняем функции. Но что здесь
+
+\begin{lstlisting}[language=c++]
+using ull = unsigned long long;
+class referencecounter {
+	std::atomic<ull> counter = 1;
+	const ull zero_flag = (1ll << 63);
+public:
+	bool increment() {
+		if (counter.fetch_add(1) & zero_flag) {
+			return false;
+		}
+		return true;
+	}
+	bool decrement() {
+		if (counter.fetch_sub(1) == 1) {
+			ull expected = 0;
+			if (counter.compare_exchange_strong(expected, zero_flag)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	ull get_counter() {
+		// why not just:
+		ull cur_counter = counter.load();
+		if (cur_counter & zero_flag) return 0;
+		if (cur_counter == 0) return 1;
+		return cur_counter;
+		// give an example of situation when it doesn't work
+	}
+}
+\end{lstlisting}
+
+Мы можем представить, что операция \emph{increment} будет вызвана после \emph{fetch\_sub(1)}, но до \emph{compare\_exchange}. Тогда состояние счетчика будет 0 и операция прибавления 1, будучи реально вызванной после \emph{decrement}, изменит состоянее до неё, то есть по сути будет исполнена раньше. Нам необходимо будет определить что вообще значит порядок операций в терминах параллельного программирования, но для начала поговорим о простейшем применении данного счётчика 
+
 \subsection{Механизм COW для строк}
+
+Допустим мы хотим научиться сжимать создаваемую при копировании строк информацию, чего с помощью COW делать не стоит (более того его из-за некоторых причин удалили для строк в 11-ом стандарте C++). Тогда вместо обычного \emph{basic\_string} вида
+
+\begin{lstlisting}[language=c++]
+class basic_string {
+	size_t size;
+	char  *c_str;
+	basic_string(const basic_string &other) {
+		size = other.size;
+		c_str = new char[size];
+		memcpy(c_str, other.c_str, size);
+	}
+};
+\end{lstlisting}
+Будем при копировании лишь ссылаться на тот же \emph{c\_str}, не переписывая заново его содержимое. Если при изменении мы являемся исключительным владельцем данной строки, то тогда мы действительно поменяем данные. Иначе мы скопируем строку, как мы и хотели до этого
+
+\begin{lstlisting}[language=c++]
+class basic_string {
+	size_t size;
+	char  *c_str;
+	ReferenceCounter *counter;
+	basic_string(const basic_string &other) {
+		if (!other.counter->increment())
+			throw std::invalid_argument("");
+		size = other.size;
+		c_str = other.c_str;
+		counter = other.counter;
+	}
+	char& operator[](size_t index) {
+		if (counter->get_counter() > 1) {
+			new_c_str = new char[size];
+			memcpy(new_c_str, c_str, size);
+			if (counter->decrement()) {
+				free(c_str);
+			}
+			c_str = new_c_str;
+			counter = new ReferenceCounter();
+		}
+		return c_str[index];
+	}
+	~basic_string() {
+		if (counter->decrement()) {
+			free(c_str);
+			delete counter;
+		}
+	}
+};
+\end{lstlisting}
+
+
 \section{Линеаризуемость}
 \begin{tikzpicture}[scale=0.8]
 \draw[->] (0,0) -- (10,0);
