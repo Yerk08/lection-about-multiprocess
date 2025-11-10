@@ -1,7 +1,7 @@
-con.pdf:
-	sudo pdflatex con.tex && kioclient exec con.pdf
+synopsis.pdf:
+	sudo pdflatex con.tex && mv con.pdf synopsis.pdf && kioclient exec synopsis.pdf
 
 all:
-	con.pdf
+	synopsis.pdf
 clean:
-	rm -f con.pdf
+	rm -f synopsis.pdf

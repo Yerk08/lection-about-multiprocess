@@ -2,6 +2,11 @@
 \usepackage[russian]{babel}
 \usepackage{graphicx}
 \usepackage{listings}
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    allcolors=black
+}
 \usepackage{amsthm, amsmath, amssymb}
 \usepackage{tikz}
 \usepackage[margin=2cm]{geometry}
@@ -344,5 +349,21 @@ public:
 На следующей лекции мы, используя всё то, что сегодня изучили, попытаемся решить следующую задачу через построение быстрого lock-free (а также wait-free) дерева поиска:
 
 У нас есть сто миллионов крыс и большой суперкомпьютер. У каждой твари есть своё имя. Нам приходят по 20 миллионов запросов в секунду о том, что крыса под именем \emph{Name} съела \emph{Count} головок сыра. Также иногда, раз в несколько секунд, крысы умирают и рождаются новые. Требуется в каждый момент времени называть имя любой крысы, которая съела больше всего сыра
+
+\vfill
+\section{Литература}
+
+\begin{enumerate}
+	\item \href{https://www.cs.sfu.ca/~ashriram/Courses/CS431/assets/distrib/AMP.pdf}{https://www.cs.sfu.ca/~ashriram/Courses/CS431/assets/distrib/AMP.pdf}
+	\item \href{https://habr.com/ru/users/khizmax/articles/}{https://habr.com/ru/users/khizmax/articles/}
+	\item \href{https://github.com/khizmax/libcds}{https://github.com/khizmax/libcds}
+	\item \href{https://en.wikipedia.org/wiki/Copy-on-write}{https://en.wikipedia.org/wiki/Copy-on-write}
+	\item \href{https://youtu.be/fhcyQ2wU7Hk?si=QI1Qx9BlBxH4VPl8}{https://youtu.be/fhcyQ2wU7Hk?si=QI1Qx9BlBxH4VPl8}
+	\item \href{https://www.youtube.com/watch?v=kPh8pod0-gk}{https://www.youtube.com/watch?v=kPh8pod0-gk}
+	\item \href{https://en.cppreference.com/w/cpp/atomic/atomic.html}{https://en.cppreference.com/w/cpp/atomic/atomic.html}
+	\item \href{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}
+	\item \href{https://scispace.com/pdf/a-universal-construction-for-wait-free-transaction-friendly-38as61nsj3.pdf}{https://scispace.com/pdf/a-universal-construction-for-wait-free-transaction-friendly-38as61nsj3.pdf}
+	\item \href{https://link.springer.com/chapter/10.1007/978-3-319-03089-0\_4}{https://link.springer.com/chapter/10.1007/978-3-319-03089-0\_4}
+\end{enumerate}
 
 \end{document}
