@@ -1,0 +1,96 @@
+\documentclass[17pt]{article}
+\usepackage[russian]{babel}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{amsthm, amsmath, amssymb}
+\usepackage{tikz}
+\usepackage[margin=2cm]{geometry}
+
+\begin{document}
+
+\section{Многопоточное исполнение}
+
+\emph{Процессом исполнения} называется последовательный запуск инструкций, который в любой момент может быть прерван планировщиком системы и возобновлён через некоторое время. За данный промежуток состояние системы может кардинально измениться в пределах используемых функций. Единственным способом сделать какое-либо действие \emph{атомарно} - использовать специальные инструкции процессора, которые в большинстве языков программирования сведены в отдельный тип и называются \emph{atomic}.
+
+Так или иначе ядро ОС предоставляет системные вызовы, которые предоставляют \emph{блокирующий} механизм синхронизации - \emph{mutex}. Он универсален и достаточно быстр и оптимален, если речь идёт об использовании других системных вызовов в этом же блоке кода. Но если заглянуть глубже в те механизмы, которые мы используем для обработки запросов, то оказывается, что его скорости мягко говоря недостаточно. В зависимости от того, какие механизмы синхронизации мы используем, появляется 4 основных вида гарантий работы приложения:
+\begin{itemize}
+	\item Блокирующие
+	\begin{itemize}
+		\item \textsc{locked} - мы верим, что программа завершится когда-нибудь, но мы не можем гарантировать, что система будет выполнять какие-либо действия, если каким-либо потокам будет дано управление
+		\begin{lstlisting}[language=C++]
+int memory = 0;
+std::mutex lock_mutex;
+int fetch_add() {
+	std::lock_guard<std::mutex> lock(lock_mutex); // mutex.lock();
+	int cur_memory = memory++;
+	// ~lock_guard<std::mutex>(lock)              // mutex.unlock();
+	return cur_memory;
+}
+		\end{lstlisting}
+
+		\item \textsc{obstruction-free} - мы гарантируем, что система будет продвигаться, если на пути одного потока не будет встречено никаких других. Иначе гарантии нет
+		\begin{lstlisting}[language=C++]
+int memory = 0;
+std::atomic<bool> spin_lock{false};
+int fetch_add() {
+    bool expected = false;
+    while (spin_lock.compare_exchange_weak(expected, true))
+		std::this_thread::yield();
+    int cur_memory = memory++;
+    spin_lock.store(false);
+    return cur_memory;
+}
+		\end{lstlisting}
+	
+	\end{itemize}
+	\item Неблокирующие
+	\begin{itemize}
+
+		\item \textsc{lock-free} - мы гарантируем, что в целом система будет продвигаться в каждый момент времени, но нет гарантии, что та или иная операция будет завершена за конечное число шагов
+		\begin{lstlisting}[language=C++]
+std::atomic<int> memory{0};
+int fetch_add() {
+	int cur_memory = memory.load();
+	while (!memory.compare_exchange_weak(cur_memory, cur_memory + 1)) {
+		cur_memory = memory.load();
+	}
+	return cur_memory;
+}
+		\end{lstlisting}
+
+		\item \textsc{wait-free} - самая сильная гарантия, мы уверены в том, что каждая операция будет завершена за конечное число шагов
+		\begin{lstlisting}[language=C++]
+std::atomic<int> memory{0};
+int fetch_add() {
+	return memory.fetch_add(1);
+}
+		\end{lstlisting}
+	
+	\end{itemize}
+\end{itemize}
+
+
+\section{Особенности работы с памятью}
+\section{Счётчик ссылок}
+
+\begin{lstlisting}[language=C++]
+#include <iostream>
+
+int main() {
+    std::cout << "Hello, World!" << std::endl;
+    return 0;
+}
+\end{lstlisting}
+
+\subsection{Механизм COW для строк}
+\section{Линеаризуемость}
+\begin{tikzpicture}[scale=0.8]
+\draw[->] (0,0) -- (10,0);
+\draw (1.5,0.5) rectangle (2.5,1.0) node[midway] {enqueue};
+\draw (3.5,1) rectangle (1.5,1.5) node[midway] {dequeue};
+\draw (6,0.5) rectangle (8,1.0) node[midway] {enqueue};
+\end{tikzpicture}
+\section{Lock-free очередь майкла-скотта}
+\section{Несимметричный RCU}
+
+\end{document}
