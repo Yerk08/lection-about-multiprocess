@@ -127,20 +127,20 @@ public:
 		std::lock_guard<std::mutex> lock(lock_mutex);
 		return counter;
 	}
-}
+};
 \end{lstlisting}
 
 Давайте его немного ускорим и превратим в lock-free
 
 \begin{lstlisting}[language=c++]
 using ull = unsigned long long;
-class referencecounter {
+class ReferenceCounter {
 	std::atomic<ull> counter = 1;
 public:
 	bool increment() {
 		ull cur_counter = counter.load();
 		while (cur_counter != 0 &&
-	counter.compare_exchange_weak(cur_counter, cur_counter + 1)) {
+	!counter.compare_exchange_weak(cur_counter, cur_counter + 1)) {
 			cur_counter = counter.load();
 		}
 		return cur_counter != 0;
@@ -151,14 +151,14 @@ public:
 	ull get_counter() {
 		return counter.load();
 	}
-}
+};
 \end{lstlisting}
 
 Заметим, что наше состояние всегда определено и на написание каждой операции мы не меняем функции. Но что здесь
 
 \begin{lstlisting}[language=c++]
 using ull = unsigned long long;
-class referencecounter {
+class ReferenceCounter {
 	std::atomic<ull> counter = 1;
 	const ull zero_flag = (1ll << 63);
 public:
@@ -185,7 +185,7 @@ public:
 		return cur_counter;
 		// give an example of situation when it doesn't work
 	}
-}
+};
 \end{lstlisting}
 
 Мы можем представить, что операция \emph{increment} будет вызвана после \emph{fetch\_sub(1)}, но до \emph{compare\_exchange}. Тогда состояние счетчика будет 0 и операция прибавления 1, будучи реально вызванной после \emph{decrement}, изменит состоянее до неё, то есть по сути будет исполнена раньше. Нам необходимо будет определить что вообще значит порядок операций в терминах параллельного программирования, но для начала поговорим о простейшем применении данного счётчика 
@@ -198,6 +198,7 @@ public:
 class basic_string {
 	size_t size;
 	char  *c_str;
+public:
 	basic_string(const basic_string &other) {
 		size = other.size;
 		c_str = new char[size];
@@ -212,6 +213,7 @@ class basic_string {
 	size_t size;
 	char  *c_str;
 	ReferenceCounter *counter;
+public:
 	basic_string(const basic_string &other) {
 		if (!other.counter->increment())
 			throw std::invalid_argument("");
@@ -221,10 +223,10 @@ class basic_string {
 	}
 	char& operator[](size_t index) {
 		if (counter->get_counter() > 1) {
-			new_c_str = new char[size];
+			char *new_c_str = new char[size];
 			memcpy(new_c_str, c_str, size);
 			if (counter->decrement()) {
-				free(c_str);
+				delete c_str;
 			}
 			c_str = new_c_str;
 			counter = new ReferenceCounter();
@@ -233,7 +235,7 @@ class basic_string {
 	}
 	~basic_string() {
 		if (counter->decrement()) {
-			free(c_str);
+			delete c_str;
 			delete counter;
 		}
 	}
