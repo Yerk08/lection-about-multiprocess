@@ -5,7 +5,7 @@
 \usepackage{hyperref}
 \hypersetup{
     colorlinks=true,
-    allcolors=black
+    allcolors=blue
 }
 \usepackage{amsthm, amsmath, amssymb}
 \usepackage{tikz}
@@ -18,8 +18,12 @@
 \begin{document}
 \maketitle
 
-Целью данного мероприятия является возможность заинтересовать людей в изучении многоядерных структур данных. Я постарался собрать всё, что мне было бы нужно услышать в первую очередь, прежде чем писать свои первые проекты, а также добавил много больше того, что выходит за рамки обычного курса многопоточного программирования и затрагивает недавние идеи, созданные в этой области
+Целью данного мероприятия является возможность заинтересовать людей в изучении многоядерных структур данных. Я постарался собрать всё, что мне было бы нужно услышать в первую очередь, прежде чем писать свои первые проекты, а также добавил немного того, что выходит за рамки обычного курса многопоточного программирования и затрагивает недавние идеи, созданные в этой области
 
+\section*{Итоговая задача}
+В конечном итоге мы хотели бы написать \textsc{lock-free} бор, который будет способен быстро обрабатывать запросы, не ломаться в случаях аварийных завершений и разумно работать с оперативной памятью
+
+\section*{\large{Лекция первая}}
 \section{Многопоточное исполнение}
 
 \emph{Процессом исполнения} называется последовательный запуск инструкций, который в любой момент может быть прерван планировщиком системы и возобновлён через некоторое время. За данный промежуток состояние системы может кардинально измениться в пределах используемых функций. Единственным способом сделать какое-либо действие \emph{атомарно} - использовать специальные инструкции процессора, которые в большинстве языков программирования сведены в отдельный тип и называются \emph{atomic}.
@@ -171,6 +175,7 @@ public:
 };
 \end{lstlisting}
 
+\vfill
 Заметим, что наше состояние всегда определено и на написание каждой операции мы не меняем функции. Но что здесь
 
 \begin{lstlisting}[language=c++]
@@ -202,7 +207,7 @@ public:
 };
 \end{lstlisting}
 
-Мы можем представить, что операция \emph{increment} будет вызвана после \emph{fetch\_sub(1)}, но до \emph{compare\_exchange}. Тогда состояние счетчика будет 0 и операция прибавления 1, будучи реально вызванной после \emph{decrement}, изменит состоянее до неё, то есть по сути будет исполнена раньше. Нам необходимо будет определить что вообще значит порядок операций в терминах параллельного программирования, но для начала поговорим о простейшем применении данного счётчика 
+Мы можем представить, что операция \emph{increment} будет вызвана после \emph{fetch\_sub(1)}, но до \emph{compare\_exchange}. Тогда состояние счетчика будет 0 и операция прибавления 1, будучи реально вызванной после \emph{decrement}, изменит состоянее до неё, то есть по сути будет исполнена раньше. Нам необходимо будет определить что вообще значит порядок операций в терминах параллельного программирования, но для начала поговорим о простейшем применении данного счётчика
 
 \vfill
 \subsection{Механизм COW для строк}
@@ -322,12 +327,7 @@ public:
 
 Объект называется \emph{линеаризуемым}, если любая операция над ним выполняется \emph{атомарно} в какой-то момент времени. И более того, любое чтение возвращает результат всех выполненных на момент его прихода записей. То есть нашу операцию можно воспринимать как \emph{атомарную}, а всю систему - как набор последовательных инструкций, и именно это и позволяет нам писать идущие друг за другом операции в \emph{линеаризуемой} системе, использующей эти \emph{линеаризуемые} объекты
 
-\section{Lock-free очередь майкла-скотта}
-
-Чтобы создать самую полезную структуру данных из всех - очередь, нам необходимо понять одну простую мысль - если мы можем помочь сдвинуть конец очереди на следующий за ним элемент, то мы \emph{сделаем} это. И тогда ссылка на него никогда не будет отставать от настоящего конца более чем на один элемент ни в какой момент времени.
-
-То есть мы для \emph{enqueue} в бесконечном цикле сначала будем менять конец на следующий после него элемент, и если такого нет, то поменяем его на наш, добавляемый. Аналогично для \emph{dequeue}, поскольку очередь может находится в состоянии \emph{head == tail} и мы не сможем забрать элемент. Затем мы просто меняем голову очереди и используем наш вынутый элемент. Чтобы его удалить нам понадобится либо счётчик ссылок (который невозможно так просто применить без hazard pointers, по причине, отчасти появившейся в COW подходе), либо RCU
-
+\vfill
 \section{RCU как несимметричный механизм SMR}
 
 Чтобы научиться выполнять операцию записи в многопоточную структуру данных необходимо учесть то, что в текущий момент есть потоки, которые выполняют оттуда чтение. Одним из решений, в основном применимых в \emph{kernel-space} (но также существующих в \emph{user-space}) является RCU. Мы будем менять данные атомарно, затем дожидаться завершения всех читающих потоков, и только после этого удалять их
@@ -344,26 +344,32 @@ public:
 	\draw[orange!100, ultra thick, -] (8.0, -0.5) -- (8.0, 1.0) node[pos = -0.5, above] {deleted};
 \end{tikzpicture}
 
-\section{Заметка на будущее: задача про крыс}
+Тогда запись будет не то чтобы \textsc{lock-free}, скорее всего проще будет реализовать \textsc{locked} алгоритм, зато чтение будет \textsc{wait-free} и не требовать ничего для его реализации. Данный подход очень прост для применения, не требует практически ничего для внедрения, не усложняет документацию и является таким же быстрым как hazard pointers, что можно считать практически эталоном скорости (из-за того что тот в свою очередь \textsc{lock-free} и бОльшую часть времени работает в изоляции без необходимости межпоточного взаимодействия).
 
-На следующей лекции мы, используя всё то, что сегодня изучили, попытаемся решить следующую задачу через построение быстрого lock-free (а также wait-free) дерева поиска:
+\vfill
+\section{Lock-free очередь майкла-скотта - решение задачи}
 
-У нас есть сто миллионов крыс и большой суперкомпьютер. У каждой твари есть своё имя. Нам приходят по 20 миллионов запросов в секунду о том, что крыса под именем \emph{Name} съела \emph{Count} головок сыра. Также иногда, раз в несколько секунд, крысы умирают и рождаются новые. Требуется в каждый момент времени называть имя любой крысы, которая съела больше всего сыра
+Чтобы создать самую полезную структуру данных из всех - очередь, нам необходимо понять одну простую мысль - если мы можем помочь сдвинуть конец очереди на следующий за ним элемент, то мы \emph{сделаем} это. И тогда ссылка на него никогда не будет отставать от настоящего конца более чем на один элемент ни в какой момент времени.
+
+То есть мы для \emph{enqueue} в бесконечном цикле сначала будем менять конец на следующий после него элемент, и если такого нет, то поменяем его на наш, добавляемый. Аналогично для \emph{dequeue}, поскольку очередь может находится в состоянии \emph{head == tail} и мы не сможем забрать элемент. Затем мы просто меняем голову очереди и используем наш вынутый элемент. Чтобы его удалить нам понадобится либо счётчик ссылок, либо RCU
+
+\vfill
+\section*{\large{Лекция вторая}}
 
 \vfill
 \section{Литература}
 
 \begin{enumerate}
-	\item \href{https://www.cs.sfu.ca/~ashriram/Courses/CS431/assets/distrib/AMP.pdf}{https://www.cs.sfu.ca/~ashriram/Courses/CS431/assets/distrib/AMP.pdf}
-	\item \href{https://habr.com/ru/users/khizmax/articles/}{https://habr.com/ru/users/khizmax/articles/}
-	\item \href{https://github.com/khizmax/libcds}{https://github.com/khizmax/libcds}
-	\item \href{https://en.wikipedia.org/wiki/Copy-on-write}{https://en.wikipedia.org/wiki/Copy-on-write}
-	\item \href{https://youtu.be/fhcyQ2wU7Hk?si=QI1Qx9BlBxH4VPl8}{https://youtu.be/fhcyQ2wU7Hk?si=QI1Qx9BlBxH4VPl8}
-	\item \href{https://www.youtube.com/watch?v=kPh8pod0-gk}{https://www.youtube.com/watch?v=kPh8pod0-gk}
-	\item \href{https://en.cppreference.com/w/cpp/atomic/atomic.html}{https://en.cppreference.com/w/cpp/atomic/atomic.html}
-	\item \href{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}
-	\item \href{https://scispace.com/pdf/a-universal-construction-for-wait-free-transaction-friendly-38as61nsj3.pdf}{https://scispace.com/pdf/a-universal-construction-for-wait-free-transaction-friendly-38as61nsj3.pdf}
-	\item \href{https://link.springer.com/chapter/10.1007/978-3-319-03089-0\_4}{https://link.springer.com/chapter/10.1007/978-3-319-03089-0\_4}
+	\item The art of Multiprocessor Programming \href{https://www.cs.sfu.ca/~ashriram/Courses/CS431/assets/distrib/AMP.pdf}{https://www.cs.sfu.ca/~ashriram/Courses/CS431/assets/distrib/AMP.pdf}
+	\item Курс по параллельному программированию \href{https://youtu.be/fhcyQ2wU7Hk?si=QI1Qx9BlBxH4VPl8}{https://youtu.be/fhcyQ2wU7Hk?si=QI1Qx9BlBxH4VPl8}
+	\item Подход COW и его описание \href{https://en.wikipedia.org/wiki/Copy-on-write}{https://en.wikipedia.org/wiki/Copy-on-write}
+	\item Статьи Максима Хижинского по \textsc{lock-free} \href{https://habr.com/ru/users/khizmax/articles/}{https://habr.com/ru/users/khizmax/articles/}
+	\item Библиотека \emph{libcds} того же автора \href{https://github.com/khizmax/libcds}{https://github.com/khizmax/libcds}
+	\item Документация по типам \emph{atomic} в C++ \href{https://en.cppreference.com/w/cpp/atomic/atomic.html}{https://en.cppreference.com/w/cpp/atomic/atomic.html}
+	\item Введение в \textsc{wait-free} программирование \href{https://www.youtube.com/watch?v=kPh8pod0-gk}{https://www.youtube.com/watch?v=kPh8pod0-gk}
+	\item Представление необходимых принципов для структур \href{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}
+	\item Универсальные конструкции \textsc{wait-free} \href{https://scispace.com/pdf/a-universal-construction-for-wait-free-transaction-friendly-38as61nsj3.pdf}{https://scispace.com/pdf/a-universal-construction-for-wait-free-transaction-friendly-38as61nsj3.pdf}
+	\item Применение подходов для организации \textsc{wait-free} \href{https://link.springer.com/chapter/10.1007/978-3-319-03089-0\_4}{https://link.springer.com/chapter/10.1007/978-3-319-03089-0\_4}
 \end{enumerate}
 
 \end{document}
