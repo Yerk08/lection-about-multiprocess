@@ -7,6 +7,7 @@
     colorlinks=true,
     allcolors=blue
 }
+\lstset{numbers=left}
 \usepackage{amsthm, amsmath, amssymb}
 \usepackage{tikz}
 \usepackage[margin=2cm]{geometry}
@@ -21,7 +22,7 @@
 Целью данного мероприятия является возможность заинтересовать людей в изучении многоядерных структур данных. Я постарался собрать всё, что мне было бы нужно услышать в первую очередь, прежде чем писать свои первые проекты, а также добавил немного того, что выходит за рамки обычного курса многопоточного программирования и затрагивает недавние идеи, созданные в этой области
 
 \section*{Итоговая задача}
-В конечном итоге мы хотели бы написать \textsc{wait-free} бор, который будет способен быстро обрабатывать запросы, не ломаться в случаях аварийных завершений и разумно работать с оперативной памятью
+В конечном итоге мы хотели бы написать \textsc{wait-free} сбалансированное дерево, которое будет способно быстро обрабатывать запросы, не ломаться в случаях аварийных завершений и разумно работать с оперативной памятью
 
 \section*{\large{Лекция первая}}
 \section{Многопоточное исполнение}
@@ -44,7 +45,10 @@ int fetch_add() {
 	return cur_memory;
 }
 		\end{lstlisting}
-
+	
+	\end{itemize}
+	\item Неблокирующие
+	\begin{itemize}
 		\item \textsc{obstruction-free} - мы гарантируем, что система будет продвигаться, если на пути одного потока не будет встречено никаких других. Иначе гарантии нет
 		\begin{lstlisting}[language=C++]
 int memory = 0;
@@ -58,11 +62,8 @@ int fetch_add() {
     return cur_memory;
 }
 		\end{lstlisting}
-		Данный пример НЕ является \textsc{obstruction-free}, потому что система не будет продвигаться в случае выключения потоков в процессе работы. \textsc{obstruction-free} являются методы, которые, например, сначала используют несколько CAS, и в случае отказа хотя бы одного выполняют операцию снова. Такая система будет продвигаться если в процессе работы выключить некоторые потоки, поэтому оно корректно
+		Данный пример НЕ является \textsc{obstruction-free}, потому что система не будет продвигаться в случае выключения потоков в процессе работы. \textsc{obstruction-free} являются методы, которые, например, сначала используют несколько CAS, и в случае отказа хотя бы одного выполняют операцию снова. Такая гарантия нужна, чтобы показать что процесс \textsc{lock-free} только в специфичных случаях
 	
-	\end{itemize}
-	\item Неблокирующие
-	\begin{itemize}
 
 		\item \textsc{lock-free} - мы гарантируем, что в целом система будет продвигаться в каждый момент времени, но нет гарантии, что та или иная операция будет завершена за конечное число шагов
 		\begin{lstlisting}[language=C++]
@@ -354,19 +355,335 @@ public:
 
 \vfill
 \section*{\large{Лекция вторая}}
+\section{Односвязный список как последовательная структура данных}
+
+	Для того, чтобы решить итоговую задачу нужно сначала научиться поддерживать структуру данных, в которой может происходить 3 операции: поиск элемента, вставка элемента в определенное место, удаление элемента. Давайте хранить односвязный список, состоящий из вершин с полями \emph{T data} и \emph{Node *next}. Поиск будет происходить итерационно, вставка и удаление будут содержать в себе предварительный поиск, и в случае успеха, требуемую операцию
+
+	\begin{enumerate}
+		\item Coarse-grained - обычным образом написанная структура, мы будем блокировать весь список, производить нашу операцию и затем разблокировать всё
+		\item Fine-grained - Давайте идти повершинно, блокируя их только при входе по очереди. Так мы можем позволить немного разделить обход, но такое поведение не сильно улучшает ситуацию.
+		\item Optimistic syncronization - позволим себе сначала пройтись до вершины, и только затем заблокировать её. Если мы не смогли её снова найти, то есть её кто-то удалил, то повторим весь проход (релевантно только для удаления, поскольку вставка осуществляется сразу после элемента).
+		\item Lazy syncronization - не будем заново всё обходить, попробуем просто хранить флаг логической удаленности вершины. Мы будем его игнорировать при проходе. При вставке после блокировки уже никто не сможет изменить его, поэтому его состояние актуально. При удалении аналогичная ситуация, только в случае удаленности предыдущей вершины необходимо заново её найти.
+		\item Non-blocking syncronization - при попытке использовать небольшое количество действий в свою пользу для написания \textsc{lock-free} подхода мы сначала терпим небольшую неудачу при применении физического удаления после логического. Но, если сделать поиск больше не \textsc{wait-free}, а \textsc{lock-free}, добавив в него удаление логически вычеркнутых вершин, то алгоритм получается реализовать. Также можно заметить, что нельзя игнорировать удаленные вершины в этом случае, поскольку они могут быть никогда не удалены иначе.
+	\end{enumerate}
+
+\vfill
+\subsection{Coarse-grained}
+\begin{lstlisting}[language=c++]
+template <typename T>
+class List;
+
+template <typename T>
+class Node {
+	T        data;
+	Node<T> *next;
+	
+	friend class List<t>;
+public:
+	Node(T val) : data(val), next(nullptr) {}
+	T get_data() { return data; }
+};
+
+template <typename T>
+class List {
+	Node<T> *head; // = dummy node
+	std::recursive_mutex lock_mutex;
+public:
+	Node<T>* search_anc(T elem) {
+		std::lock_guard<std::recursive_mutex> lock(lock_mutex);
+		Node<T> *cur = head;
+		while (cur->next != nullptr) {
+			if (cur->next->T == elem) {
+				return cur;
+			}
+			cur = cur->next;
+		}
+		return nullptr;
+	}
+	bool insert(T after, T elem) {
+		Node<T> *node = new Node<T>{elem};
+		std::lock_guard<std::recursive_mutex> lock(lock_mutex);
+		Node<T> *found_anc = this->search_anc(after);
+		if (found_anc != nullptr) {
+			Node<T> *curr = found_anc->next;
+			node->next = curr->next; curr->next = node;
+			return true;
+		}
+		return false;
+	}
+	bool delete(T elem) {
+		std::lock_guard<std::recursive_mutex> lock(lock_mutex);
+		Node<T> *found_anc = this->search_anc(elem);
+		if (found_anc != nullptr) {
+			found_anc->next = found_anc->next->next;
+			return true;
+		}
+		return false;
+	}
+};
+\end{lstlisting}
+
+\vfill
+\subsection{Fine-grained}
+\begin{lstlisting}[language=c++]
+template <typename T>
+class Node {
+	T        data;
+	Node<T> *next;
+	std::mutex lock_mutex;
+	
+	friend class List<t>;
+public:
+	Node(T val) : data(val), next(nullptr) {}
+	T get_data() { return data; }
+};
+
+template <typename T>
+class List {
+	Node<T> *head; // = dummy node
+public:
+	// after search operation need to unlock Node<T> *result and result->next
+	Node<T>* search_anc(T elem) {
+		Node<T> *cur = head;
+		cur->lock_mutex.lock();
+		while (cur->next != nullptr) {
+			cur->next->lock_mutex.lock();
+			if (cur->next->T == elem) {
+				return cur;
+			}
+			cur->lock_mutex.unlock();
+			cur = cur->next;
+		}
+		cur->lock_mutex.unlock();
+		return nullptr;
+	}
+	bool insert(T after, T elem) {
+		Node<T> *node = new Node<T>{elem};
+		Node<T> *found_anc = this->search_anc(after);
+		if (found_anc != nullptr) {
+			Node<T> *curr = found_anc->next;
+			node->next = curr->next; curr->next = node;
+			found_anc->lock_mutex.unlock(); curr->lock_mutex.unlock();
+			return true;
+		}
+		return false;
+	}
+	bool delete(T elem) {
+		Node<T> *found_anc = this->search_anc(elem);
+		if (found_anc != nullptr) {
+			found_anc->next = found_anc->next->next;
+			found_anc->lock_mutex.unlock(); curr->lock_mutex.unlock();
+			return true;
+		}
+		return false;
+	}
+};
+\end{lstlisting}
+
+\vfill
+\subsection{Optimistic synchronization}
+\begin{lstlisting}[language=c++]
+template <typename T>
+class List {
+	Node<T> *head; // = dummy node
+public:
+	pair<Node<T>*, Node<T>*> search_anc(T elem) {
+		Node<T> *cur = head;
+		Node<T> *next_cur = cur->next;
+		while (next_cur != nullptr) {
+			if (next_cur->T == elem) {
+				return {cur, next_cur};
+			}
+			cur = next_cur;
+			next_cur = next_cur->next;
+		}
+		return {nullptr, nullptr};
+	}
+	bool insert(T after, T elem) {
+		Node<T> *node = new Node<T>{elem};
+		while (true) {
+			auto [found_anc, curr] = this->search_anc(after);
+			if (found_anc == nullptr) return false;
+			
+			std::lock_guard<std::mutex> lock_next(curr->lock_mutex);
+			if (this->search_anc(after).second != curr) return false;
+			
+			node->next = curr->next; curr->next = node;
+			return true;
+		}
+		return false;
+	}
+	bool delete(T elem) {
+		while (true) {
+			auto [found_anc, curr] = this->search_anc(elem);
+			if (found_anc == nullptr) return false;
+			
+			std::lock_guard<std::mutex> lock(found_anc->lock_mutex);
+			std::lock_guard<std::mutex> lock_next(curr->lock_mutex);
+			if (found_anc->next != curr) continue;
+			if (this->search_anc(elem).first != found_anc) continue;
+
+			found_anc->next = curr->next;
+			return true;
+		}
+		return false;
+	}
+};
+\end{lstlisting}
+
+\vfill
+\subsection{Lazy synchronization}
+\begin{lstlisting}[language=c++]
+template <typename T>
+class Node {
+	T        data;
+	Node<T> *next;
+	bool    alive;
+};
+
+template <typename T>
+class List {
+	Node<T> *head; // = dummy node
+public:
+	pair<Node<T>*, Node<T>*> search_anc(T elem) {
+		Node<T> *cur = head;
+		Node<T> *next_cur = cur->next;
+		while (next_cur != nullptr) {
+			if (next_cur->T == elem) {
+				return {cur, next_cur};
+			}
+			cur = next_cur;
+			next_cur = next_cur->next;
+		}
+		return {nullptr, nullptr};
+	}
+	bool insert(T after, T elem) {
+		Node<T> *node = new Node<T>{elem};
+		while (true) {
+			auto [found_anc, curr] = this->search_anc(after);
+			if (found_anc == nullptr) return false;
+			
+			std::lock_guard<std::mutex> lock_next(curr->lock_mutex);
+			if (!curr->alive) return false;
+			
+			node->next = curr->next; curr->next = node;
+			return true;
+		}
+		return false;
+	}
+	bool delete(T elem) {
+		while (true) {
+			auto [found_anc, curr] = this->search_anc(elem);
+			if (found_anc == nullptr) return false;
+			
+			std::lock_guard<std::mutex> lock(found_anc->lock_mutex);
+			std::lock_guard<std::mutex> lock_next(curr->lock_mutex);
+			if (!curr->alive) return false;
+			if (found_anc->next != curr) continue;
+			if (!found_anc->alive) continue;
+
+			curr->alive = false; found_anc->next = curr->next;
+			return true;
+		}
+		return false;
+	}
+};
+\end{lstlisting}
+
+\vfill
+\subsection{Non-blocking synchronization}
+\begin{lstlisting}[language=c++]
+// Node<T>.next is atomic<Node<T>*>
+const size_t alive_flag = (1ll << 63); // Node<T>.next has an alive_flag
+const size_t alive_mask = ~alive_flag; // (ref & alive_mask) to use the pointer
+
+template <typename T>
+class List {
+	pair<Node<T>*, Node<T>*> search_anc(T elem) {
+		Node<T> *cur = head;
+		Node<T> *next_cur = cur->next; // like atomic.load()
+		while (next_cur != nullptr) {
+			if (!(next_cur & alive_flag)) { // helping delete
+				Node<T> *expected = next_cur;
+				if (!cur->next.compare_exchange_strong
+						(expected, next_cur->next)) {
+					next_cur = head->next; // otherwise haven't even -
+					continue;      // lock-free; need full traversal
+				}
+			}
+			if (next_cur->T == elem) { // like using alive_mask
+				return {cur, next_cur};
+			}
+			cur = next_cur;
+			next_cur = next_cur->next; // like using alive_mask
+		}
+		return {nullptr, nullptr};
+	}
+	bool insert(T after, T elem) {
+		Node<T> *node = new Node<T>{elem};
+		while (true) {
+			auto [found_anc, curr] = this->search_anc(after);
+			if (found_anc == nullptr) return false;
+			Node<T> *expected = curr->next.load(); //preparing for CAS
+			if (!(expected & alive_flag)) return false;
+			node->next.store(expected);
+			if (!curr->next.compare_exchange_weak(expected, node)) continue;
+			return true;
+		}
+		return false;
+	}
+	bool delete(T elem) {
+		while (true) {
+			auto [found_anc, curr] = this->search_anc(elem);
+			if (found_anc == nullptr) return false;
+			Node<T> *expected = curr->next.load(); //preparing for CAS
+			if (!(expected & alive_flag)) return false;
+			if (!curr->next.compare_exchange_weak
+					(expected, expected & alive_flag)) continue;
+			found_anc->next.compare_exchange_strong(curr, expected);
+			// if last CAS failed then other threads will help!
+			return true;
+		}
+		return false;
+	}
+};
+\end{lstlisting}
+
+\vfill
+\section{Универсальные \textsc{wait-free} конструкции}
+
+\vfill
+\subsection{Грамотная постановка задачи}
+
+\vfill
+\subsection{Решение с помощью \textsc{lock-free} очереди}
+
+\vfill
+\subsection{Добавление gate}
+
+\vfill
+\subsection{Доведение до кондиции}
+
+\vfill
+\section{\textsc{wait-free} красно-черное дерево}
 
 \vfill
 \section{Литература}
 
+Лекция 1
 \begin{enumerate}
 	\item The art of Multiprocessor Programming \href{https://www.cs.sfu.ca/~ashriram/Courses/CS431/assets/distrib/AMP.pdf}{https://www.cs.sfu.ca/~ashriram/Courses/CS431/assets/distrib/AMP.pdf}
 	\item Курс по параллельному программированию \href{https://youtu.be/fhcyQ2wU7Hk?si=QI1Qx9BlBxH4VPl8}{https://youtu.be/fhcyQ2wU7Hk?si=QI1Qx9BlBxH4VPl8}
 	\item Подход COW и его описание \href{https://en.wikipedia.org/wiki/Copy-on-write}{https://en.wikipedia.org/wiki/Copy-on-write}
-	\item Статьи Максима Хижинского по \textsc{lock-free} \href{https://habr.com/ru/users/khizmax/articles/}{https://habr.com/ru/users/khizmax/articles/}
-	\item Библиотека \emph{libcds} того же автора \href{https://github.com/khizmax/libcds}{https://github.com/khizmax/libcds}
 	\item Документация по типам \emph{atomic} в C++ \href{https://en.cppreference.com/w/cpp/atomic/atomic.html}{https://en.cppreference.com/w/cpp/atomic/atomic.html}
 	\item Введение в \textsc{wait-free} программирование \href{https://www.youtube.com/watch?v=kPh8pod0-gk}{https://www.youtube.com/watch?v=kPh8pod0-gk}
-	\item Представление необходимых принципов для структур \href{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}
+\end{enumerate}
+Лекция 2
+\begin{enumerate}
+	\item Статьи Максима Хижинского по \textsc{lock-free} \href{https://habr.com/ru/users/khizmax/articles/}{https://habr.com/ru/users/khizmax/articles/}
+	\item Библиотека \emph{libcds} того же автора \href{https://github.com/khizmax/libcds}{https://github.com/khizmax/libcds}
+	\item Представление необходимых принципов для структур \href{https://oasis.library.unlv.edu/cgi/viewcontent.cgi?article=3425\&context=thesesdissertations}{https://oasis.library.unlv.edu/cgi/viewcontent.cgi
+		?article=3425\&context=thesesdissertations}
 	\item Универсальные конструкции \textsc{wait-free} \href{https://scispace.com/pdf/a-universal-construction-for-wait-free-transaction-friendly-38as61nsj3.pdf}{https://scispace.com/pdf/a-universal-construction-for-wait-free-transaction-friendly-38as61nsj3.pdf}
 	\item Применение подходов для организации \textsc{wait-free} \href{https://link.springer.com/chapter/10.1007/978-3-319-03089-0\_4}{https://link.springer.com/chapter/10.1007/978-3-319-03089-0\_4}
 \end{enumerate}
