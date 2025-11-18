@@ -674,20 +674,18 @@ Operation announce[P];
 Result do_operation(Operation x) {
 	x.time = operation_counter->increment();
 	announce[this_thread_id] = x;
-	while (true) {
-		if (announce[i].is_done()) {
-			return done;
-		}
+	while (!announce[i].is_done()) {
 		announce' = announce.copy();
 		Rx' = Rx.copy();
 		newRx' = Rx';
 		for (int i : {0..P-1}) {
-			if (announce[i].time <= x.time) {
-				do operation announce[i] on newRx';
+			if (announce'[i].time <= x.time) {
+				do operation announce'[i] on newRx';
 				announce'[i].done();
 			}
 		}
 		if (!CAS(Rx, Rx', newRx')) continue;
+
 		for (int i : {0..P-1}) {
 			if (announce'[i].is_done()) {
 				CAS(announce[i], announce'[i].like_not_done, announce'[i]);
@@ -698,15 +696,78 @@ Result do_operation(Operation x) {
 }
 \end{lstlisting}
 
-Можно заметить что такое решение работает за \emph{$O(P^2T)$} сложность, хоть и является \textsc{wait-free}. Необходимо придумать что-то похожее, но попроще
+Можно заметить что такое решение работает за \emph{$O(P^2T)$} сложность на каждом из потоков, хоть и является \textsc{wait-free}. Необходимо придумать что-то похожее, но оптимальнее. Также можно заметить, что невозможно отменить операцию, даже если у неё был сделан анонс - по крайней мере здесь это является достаточно сложной задачей. Попробуем применить подход с нумерацией операций.
 
 \vfill
 \subsection{Решение с помощью \textsc{lock-free} очереди}
 
-Следующим шагом к созданию алгоритма является применения понятия очереди. Пусть все новые процессы будут заносить анонс своей операции в очередь, и потом любой, кто захочет сможет оттуда взять последнюю. Как только кто-то её выполнит мы удалим этот элемент и будем пытаться выполнить следующую операцию. Так или иначе каждому потоку повезет быть исполненым. 
+Следующим шагом к созданию алгоритма является применения понятия очереди. Пусть все новые процессы будут заносить анонс своей операции в очередь, и потом любой, кто захочет сможет оттуда взять последнюю. Как только кто-то её выполнит мы удалим этот элемент и будем пытаться выполнить следующую операцию. Так или иначе каждому потоку повезет быть исполненым.
 
-\vfill
+\begin{lstlisting}
+Queue<Operation> announces;
+Result do_operation(Operation x) {
+	x.time = operation_counter->increment();
+	announces.push(x);
+	while (!x.is_done()) {
+		announce' = announces.front();
+		Rx' = Rx.copy();
+		newRx' = Rx';
+		if (announce'.time <= x.time) { // should be always true
+			do operation announce' on newRx';
+			announce'.done();
+		}
+		CAS(Rx, Rx', newRx');
+		announce'->done(); // for !x.is_done() rule
+
+		// if announce.front() is announce' then pop
+		announce.pop(announce');
+		// otherwise someone else removed this
+		free(announce');
+	}
+	return done;
+}
+\end{lstlisting}
+
+Наша асимптотика стала \emph{$O(PT)$}, чего мы и хотели добиться. Заметим, что для начала нам нужна \textsc{wait-free} очередь, а также механизм освобождения памяти, выделенной под анонс, чтобы реализовать данный подход. Ни то ни другое не является простой задачей.
+
+Поэтому нам необходимо понять одну деталь: нам по факту не важно будет ли поток, который первым добавился в очередь, исполнен первым, нам нужно лишь чтобы все операции рано или поздно были исполнены. Тогда пусть наша очередь будет расположена на массиве, и у нас будет единый счетчик текущей исполняемой операции. Назовем его gate, также в нём же будем хранить количество последних исполненных операций, т.е. наш \emph{operation\_counter}.
+
 \subsection{Добавление gate}
+
+\begin{lstlisting}
+struct Gate {
+	size_t cur; // pointer - current active operation
+	size_t seq; // counter - number of operations
+};
+Operation announce[P];
+Gate gate = {nullptr, 0};
+
+Result do_operation(Operation x) {
+	i = this_thread::get_id();
+	x.time = gate.seq;
+	announce[i] = x;
+	while (!x.is_done()) {
+		gate' = gate.load();
+		if (gate'.cur == nullptr) {
+			CAS(gate, {announce[gate'.seq \% P], gate'.seq});
+			gate' = gate.load();
+		}
+		if (gate'.cur != nullptr) {
+			announce' = gate'.cur;
+			if (announce'.time <= gate'.seq) {
+				Rx' = Rx.copy();
+				newRx' = Rx';
+				do operation announce' on newRx';
+				announce'.done();
+				CAS(Rx, Rx', newRx');
+			}
+			announce'->done();
+			CAS(gate, {nullptr, gate'.seq + 1});
+		}
+	}
+	return done;
+}
+\end{lstlisting}
 
 \vfill
 \subsection{Доведение до кондиции}
