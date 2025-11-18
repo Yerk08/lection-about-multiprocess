@@ -1,5 +1,5 @@
-synopsis.pdf:
-	sudo pdflatex con.tex && mv con.pdf synopsis.pdf && kioclient exec synopsis.pdf
+synopsis.pdf: con.tex
+	sudo pdflatex con.tex && sudo mv con.pdf synopsis.pdf && kioclient exec synopsis.pdf
 
 all:
 	synopsis.pdf
