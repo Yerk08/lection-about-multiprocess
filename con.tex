@@ -675,13 +675,16 @@ Result do_operation(Operation x) {
 	x.time = operation_counter->increment();
 	announce[this_thread_id] = x;
 	while (!announce[i].is_done()) {
-		announce' = announce.copy();
+		Operation announce' = announce.copy();
 		Rx' = Rx.copy();
 		newRx' = Rx';
 		for (int i : {0..P-1}) {
-			if (announce'[i].time <= x.time) {
-				do operation announce'[i] on newRx';
-				announce'[i].done();
+			if (!announce'[i].is_done()) {
+				// next rule is required to achieve wait-freedom
+				if (announce'[i].time <= x.time) {
+					newRx'->announce'[i](); // do an operation
+					announce'[i].done();
+				}
 			}
 		}
 		if (!CAS(Rx, Rx', newRx')) continue;
@@ -709,35 +712,35 @@ Result do_operation(Operation x) {
 	x.time = operation_counter->increment();
 	announces.push(x);
 	while (!x.is_done()) {
-		announce' = announces.front();
+		Operation announce' = announces.front();
 		Rx' = Rx.copy();
 		newRx' = Rx';
 		if (announce'.time <= x.time) { // should be always true
-			do operation announce' on newRx';
+			newRx'->announce'(); // do an operation
 			announce'.done();
 		}
 		CAS(Rx, Rx', newRx');
 		announce'->done(); // for !x.is_done() rule
 
 		// if announce.front() is announce' then pop
-		announce.pop(announce');
 		// otherwise someone else removed this
+		announce.pop(announce');
 		free(announce');
 	}
 	return done;
 }
 \end{lstlisting}
 
-Наша асимптотика стала \emph{$O(PT)$}, чего мы и хотели добиться. Заметим, что для начала нам нужна \textsc{wait-free} очередь, а также механизм освобождения памяти, выделенной под анонс, чтобы реализовать данный подход. Ни то ни другое не является простой задачей.
+Наша асимптотика стала \emph{$O(PT)$}, чего мы и хотели добиться. Заметим, что для начала нам нужна \textsc{wait-free} очередь, а также механизм освобождения памяти, выделенной под анонс, чтобы реализовать данный подход. Написание \textsc{wait-free} аллокации памяти не является тривиальной задачей, попробуем использовать преобразование очереди. 
 
-Поэтому нам необходимо понять одну деталь: нам по факту не важно будет ли поток, который первым добавился в очередь, исполнен первым, нам нужно лишь чтобы все операции рано или поздно были исполнены. Тогда пусть наша очередь будет расположена на массиве, и у нас будет единый счетчик текущей исполняемой операции. Назовем его gate, также в нём же будем хранить количество последних исполненных операций, т.е. наш \emph{operation\_counter}.
+Нам по факту не важно будет ли поток, который первым добавился в очередь, исполнен первым, нам нужно лишь чтобы все операции рано или поздно были исполнены. Тогда пусть наша очередь будет расположена на массиве, и у нас будет единый счетчик текущей исполняемой операции. Назовем его \emph{gate}, также в нём же будем хранить количество последних исполненных операций, т.е. наш \emph{operation\_counter}.
 
 \subsection{Добавление gate}
 
 \begin{lstlisting}
 struct Gate {
 	size_t cur; // pointer - current active operation
-	size_t seq; // counter - number of operations
+	size_t seq; // counter - number of done operations
 };
 Operation announce[P];
 Gate gate = {nullptr, 0};
@@ -746,31 +749,83 @@ Result do_operation(Operation x) {
 	i = this_thread::get_id();
 	x.time = gate.seq;
 	announce[i] = x;
+	Gate gate';
 	while (!x.is_done()) {
 		gate' = gate.load();
 		if (gate'.cur == nullptr) {
-			CAS(gate, {announce[gate'.seq \% P], gate'.seq});
+			Operation announce' = announce[gate'.seq % P];
+			if (announce'.is_done()) {
+				announce' = x;
+			}
+			if (announce'.is_done()) break;
+			CAS(gate, {gate', {announce', gate'.seq}});
 			gate' = gate.load();
 		}
 		if (gate'.cur != nullptr) {
-			announce' = gate'.cur;
-			if (announce'.time <= gate'.seq) {
+			Operation announce' = announce[gate'.cur];
+			// gate' is like a pointer to head of the queue
+			// that's why we really need to check
+			if (announce'.time <= gate'.seq) { // gate' isn't old
 				Rx' = Rx.copy();
 				newRx' = Rx';
-				do operation announce' on newRx';
-				announce'.done();
+				newRx'->announce'(); // do an operation
 				CAS(Rx, Rx', newRx');
 			}
-			announce'->done();
-			CAS(gate, {nullptr, gate'.seq + 1});
+			CAS(announce[gate'.cur], announce', announce'.done());
+			CAS(gate, {gate', {nullptr, gate'.seq + 1}});
 		}
+	}
+	if (gate'.cur == i) {
+		CAS(gate, {gate', {nullptr, gate'.seq + 1}});
 	}
 	return done;
 }
 \end{lstlisting}
 
-\vfill
 \subsection{Доведение до кондиции}
+
+Во всех случаях мы упустили один момент: нам нужно обеспечить возможность доступа к старым значениям структуры данных, даже если их только что обновили. Поскольку потоки могут "заснуть"\  ровно перед моментом помощи, нужно сделать две версии структуры, которые будут чередоваться по использованию. Теоретически их количество может быть неограниченным, но больше чем две нам обеспечивать не нужно, ведь после копирования и до выполнения операции мы можем проверить временную корректность данных.
+
+Также необходимо учесть ситуацию, когда один из потоков уже завершил выполнение операции полностью, переключил \emph{toggle} значение в структуре данных, но ещё не выполнил CAS, который фиксирует завершенность \emph{announce[gate'.cur].done()}. И даже после этого стоило бы добавить логику обработки отмены операций, которая должна быть описана примерно в каждой части проверок, из-за чего псевдокод очень сильно увеличится в размере. Поэтому эту часть я описывать не буду.
+
+\begin{lstlisting}
+struct Version {
+	bool toggle; // version - bit, which resolved current problem
+	size_t  seq; // counter - number of done operations
+
+};
+Version version{0};
+
+Result do_operation(Operation x) {
+	...
+		if (gate'.cur != nullptr) {
+			Operation announce' = announce[gate'.cur];
+			if (announce'.time <= gate'.seq) { // gate' isn't old
+				Rx' = Rx.copy();
+				version' = version.load();
+				if (version'.seq > gate'.seq) break;
+
+				before = &Rx'[version'.toggle];
+				after  = &Rx'[version'.toggle ^ 1];
+				if (version'.seq == gate'.seq) { // because CAS(announce)
+					swap(*before, *after);
+				}
+
+				after = &(*before)->announce'(); // do an operation
+				CAS(Rx, Rx', {*before, *after});
+
+				if (version'.seq < gate'.seq)
+					CAS(version, version'.toggle, version'.toggle ^ 1);
+			}
+			CAS(announce[gate'.cur], announce', announce'.done());
+			CAS(gate, {gate', {nullptr, gate'.seq + 1}});
+		}
+	}
+	...
+}
+\end{lstlisting}
+
+Если рассуждать грамотно, то проверка на соответствие версий структур должна быть полная, с учетом предыдущего состояния структуры. Для этого стоит не всей структуре дать версию, а каждому элементу в ней. Также в оригинальной статье про универсальные конструкции также рассмотрен способ встроенной и поэтому удобной аллокации. Если есть желание, то предлагаю её на чтение, но данное усложнение лишь мешает пониманию общих принципов, поэтому я его не привожу.
 
 \vfill
 \section{\textsc{wait-free} красно-черное дерево}
